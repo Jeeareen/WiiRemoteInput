@@ -2,7 +2,7 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using WiimoteLib;
+using WiiRemoteMouse;
 using PointF = System.Drawing.PointF;
 
 ApplicationConfiguration.Initialize();
@@ -20,10 +20,10 @@ if (missing.Length > 0)
 Application.Run(new MainForm(Img("remote.png"), Img("bbutton.png"),
                              Img("nunchuk.png"), Img("nunchuk_c.png"), Img("nunchuk_z.png")));
 
-enum OutputType { Keyboard, MouseButton, MouseMove }
+enum OutputType { Keyboard, MouseButton, MouseMove, MouseWheel }
 enum MouseMoveDir { Up, Down, Left, Right }
 
-// A keyboard key (by scan code), a mouse button, or a directional mouse cursor movement.
+// A keyboard key (by scan code), a mouse button, directional mouse cursor movement, or mouse scroll.
 record Output(string Name, OutputType Type, ushort Code, bool Extended = false, MouseMoveDir MoveDir = MouseMoveDir.Up);
 
 class MainForm : Form
@@ -54,6 +54,21 @@ class MainForm : Form
     const int StickLeft = 32768;
     const int StickRight = 65536;
 
+    // Motion bit flags (mapped inputs)
+    const int AccelXUp = 1 << 17;
+    const int AccelXDown = 1 << 18;
+    const int AccelYUp = 1 << 19;
+    const int AccelYDown = 1 << 20;
+    const int AccelZUp = 1 << 21;
+    const int AccelZDown = 1 << 22;
+
+    const int GyroYawUp = 1 << 23;
+    const int GyroYawDown = 1 << 24;
+    const int GyroRollUp = 1 << 25;
+    const int GyroRollDown = 1 << 26;
+    const int GyroPitchUp = 1 << 27;
+    const int GyroPitchDown = 1 << 28;
+
     // Every Wii input that can be assigned, in the order shown in the panel.
     static readonly Source[] Sources =
     {
@@ -63,6 +78,14 @@ class MainForm : Form
         new("D-pad Up", 128), new("D-pad Down", 256), new("D-pad Left", 512), new("D-pad Right", 1024),
         new("Stick Up", StickUp), new("Stick Down", StickDown),
         new("Stick Left", StickLeft), new("Stick Right", StickRight),
+
+        new("Accel X Up", AccelXUp), new("Accel X Down", AccelXDown),
+        new("Accel Y Up", AccelYUp), new("Accel Y Down", AccelYDown),
+        new("Accel Z Up", AccelZUp), new("Accel Z Down", AccelZDown),
+
+        new("Gyro Left", GyroYawUp), new("Gyro Right", GyroYawDown),
+        new("Roll Right", GyroRollUp), new("Roll Left", GyroRollDown),
+        new("Gyro Down", GyroPitchUp), new("Gyro Up", GyroPitchDown),
     };
 
     static readonly Output[] Outputs = BuildOutputs();
@@ -75,6 +98,8 @@ class MainForm : Form
             new("Mouse Move Down", OutputType.MouseMove, 0, MoveDir: MouseMoveDir.Down),
             new("Mouse Move Left", OutputType.MouseMove, 0, MoveDir: MouseMoveDir.Left),
             new("Mouse Move Right", OutputType.MouseMove, 0, MoveDir: MouseMoveDir.Right),
+            new("Mouse Scroll Up", OutputType.MouseWheel, 0, MoveDir: MouseMoveDir.Up),
+            new("Mouse Scroll Down", OutputType.MouseWheel, 0, MoveDir: MouseMoveDir.Down),
             new("Mouse Left", OutputType.MouseButton, 0x0002),
             new("Mouse Right", OutputType.MouseButton, 0x0008),
             new("Mouse Middle", OutputType.MouseButton, 0x0020),
@@ -130,13 +155,16 @@ class MainForm : Form
     readonly Output?[] assigned = new Output?[Sources.Length];
     readonly Label outLabel;
     readonly System.Windows.Forms.Timer moveTimer;
-    Wiimote? wm;
+    DolphinWiimoteManager? wmManager;
     int mask;
     float stickX, stickY;
+    volatile WiimoteInputState? motion;
+    long lastMotionPaint;
     float mouseSpeed = 17.5f;
     int currentSensitivity = 5;
     float mouseRemainderX = 0f;
     float mouseRemainderY = 0f;
+    float scrollRemainder = 0f;
     const float topPad = 45f;
     volatile bool appActive;   // true while this window is in front
     string status = "Connecting...";
@@ -172,7 +200,7 @@ class MainForm : Form
         nRect = new RectangleF(LeftW / 2 - nW / 2, zRect.Bottom + 20, nW, nH);
 
         Text = "Wii Remote Input";
-        ClientSize = new Size(895, 800);
+        ClientSize = new Size(895, 940);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         DoubleBuffered = true;
@@ -185,7 +213,7 @@ class MainForm : Form
             Left = (int)(LeftW + drawW + 110),
             Top = 0,
             Width = PanelW,
-            Height = 800,
+            Height = 940,
             BackColor = Color.FromArgb(50, 50, 56)
         };
         Controls.Add(panel);
@@ -243,6 +271,18 @@ class MainForm : Form
         panel.Controls.Add(speedTrack);
 
         var names = new[] { "(none)" }.Concat(Outputs.Select(o => o.Name)).ToArray();
+
+        // Scrollable container for assignment dropdowns
+        var scrollPanel = new Panel
+        {
+            Left = 0,
+            Top = 115,
+            Width = PanelW,
+            Height = 720,
+            AutoScroll = true
+        };
+        panel.Controls.Add(scrollPanel);
+
         for (int i = 0; i < Sources.Length; i++)
         {
             int row = i;
@@ -251,7 +291,7 @@ class MainForm : Form
                 Text = Sources[i].Name,
                 ForeColor = Color.White,
                 Left = 12,
-                Top = 130 + i * 31 + 4,
+                Top = 10 + i * 31 + 4,
                 Width = 145,
                 Height = 24
             };
@@ -259,14 +299,29 @@ class MainForm : Form
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Left = 160,
-                Top = 130 + i * 31,
+                Top = 10 + i * 31,
                 Width = 240,
                 MaxDropDownItems = 16
             };
             cb.Items.AddRange(names);
 
             int sel = 0;
-            if (saved.Mappings.TryGetValue(Sources[i].Name, out var savedName))
+            // Backwards compatibility migration for renamed gyro labels in saved config
+            string lookupKey = Sources[i].Name;
+            if (!saved.Mappings.ContainsKey(lookupKey))
+            {
+                lookupKey = Sources[i].Name switch
+                {
+                    "Gyro Left" => "Gyro Yaw Up",
+                    "Gyro Right" => "Gyro Yaw Down",
+                    "Roll Right" => "Gyro Roll Up",
+                    "Roll Left" => "Gyro Roll Down",
+                    "Gyro Down" => "Gyro Pitch Up",
+                    "Gyro Up" => "Gyro Pitch Down",
+                    _ => Sources[i].Name
+                };
+            }
+            if (saved.Mappings.TryGetValue(lookupKey, out var savedName))
             {
                 int idx = Array.FindIndex(Outputs, o => o.Name == savedName);
                 if (idx >= 0) sel = idx + 1;
@@ -275,8 +330,8 @@ class MainForm : Form
             assigned[i] = sel == 0 ? null : Outputs[sel - 1];
 
             cb.SelectedIndexChanged += (_, _) => OnAssignChanged(row, cb.SelectedIndex);
-            panel.Controls.Add(lbl);
-            panel.Controls.Add(cb);
+            scrollPanel.Controls.Add(lbl);
+            scrollPanel.Controls.Add(cb);
         }
 
         currentSensitivity = saved.Speed is >= 1 and <= 10 ? saved.Speed : (saved.Speed > 10 ? Math.Clamp((int)MathF.Round(saved.Speed / 3.5f), 1, 10) : 5);
@@ -288,7 +343,7 @@ class MainForm : Form
         {
             ForeColor = Color.Gainsboro,
             Left = 12,
-            Top = 718,
+            Top = 850,
             Width = PanelW - 24,
             Height = 55,
             Text = "Output paused: this window is active.\nSwitch to your game to send keys."
@@ -318,7 +373,7 @@ class MainForm : Form
         FormClosed += (_, _) =>
         {
             ReleaseAll();
-            try { wm?.Disconnect(); } catch { }
+            try { wmManager?.Dispose(); } catch { }
         };
     }
 
@@ -330,69 +385,107 @@ class MainForm : Form
 
         float vx = 0f;
         float vy = 0f;
+        float scrollV = 0f;
 
         for (int i = 0; i < Sources.Length; i++)
         {
             var o = assigned[i];
-            if (o is null || o.Type != OutputType.MouseMove) continue;
+            if (o is null || (o.Type != OutputType.MouseMove && o.Type != OutputType.MouseWheel)) continue;
 
             int bit = Sources[i].Bit;
             bool active = (mask & bit) != 0;
 
-            // Determine intensity: if it's stick input, use analog magnitude if deflected; otherwise 1.0f
+            // Determine intensity: if it's stick or motion input, scale proportionally with deflection / swing speed!
             float intensity = 0f;
             if (bit == StickUp && stickY > 0.08f) intensity = stickY;
             else if (bit == StickDown && stickY < -0.08f) intensity = -stickY;
             else if (bit == StickLeft && stickX < -0.08f) intensity = -stickX;
             else if (bit == StickRight && stickX > 0.08f) intensity = stickX;
+            // Accelerometer: 0.35g threshold, scaling up smoothly with swing acceleration
+            else if (bit == AccelXUp && motion != null && motion.AccelX > 0.35f) intensity = (motion.AccelX - 0.35f) * 1.8f;
+            else if (bit == AccelXDown && motion != null && motion.AccelX < -0.35f) intensity = (-motion.AccelX - 0.35f) * 1.8f;
+            else if (bit == AccelYUp && motion != null && motion.AccelY > 0.35f) intensity = (motion.AccelY - 0.35f) * 1.8f;
+            else if (bit == AccelYDown && motion != null && motion.AccelY < -0.35f) intensity = (-motion.AccelY - 0.35f) * 1.8f;
+            else if (bit == AccelZUp && motion != null && motion.AccelZ > 0.35f) intensity = (motion.AccelZ - 0.35f) * 1.8f;
+            else if (bit == AccelZDown && motion != null && motion.AccelZ < -0.35f) intensity = (-motion.AccelZ - 0.35f) * 1.8f;
+            // Gyroscope: 30 deg/s threshold, scales continuously with rotational swing velocity (e.g. 300 deg/s swing = higher intensity)
+            else if (bit == GyroYawUp && motion is { MotionPlusActive: true } && motion.GyroYaw > 30f) intensity = (motion.GyroYaw - 30f) / 75f;
+            else if (bit == GyroYawDown && motion is { MotionPlusActive: true } && motion.GyroYaw < -30f) intensity = (-motion.GyroYaw - 30f) / 75f;
+            else if (bit == GyroRollUp && motion is { MotionPlusActive: true } && motion.GyroRoll > 30f) intensity = (motion.GyroRoll - 30f) / 75f;
+            else if (bit == GyroRollDown && motion is { MotionPlusActive: true } && motion.GyroRoll < -30f) intensity = (-motion.GyroRoll - 30f) / 75f;
+            else if (bit == GyroPitchUp && motion is { MotionPlusActive: true } && motion.GyroPitch > 30f) intensity = (motion.GyroPitch - 30f) / 75f;
+            else if (bit == GyroPitchDown && motion is { MotionPlusActive: true } && motion.GyroPitch < -30f) intensity = (-motion.GyroPitch - 30f) / 75f;
             else if (active) intensity = 1.0f;
 
             if (intensity <= 0.01f) continue;
 
-            switch (o.MoveDir)
+            if (o.Type == OutputType.MouseMove)
             {
-                case MouseMoveDir.Up:
-                    vy -= intensity;
-                    break;
-                case MouseMoveDir.Down:
-                    vy += intensity;
-                    break;
-                case MouseMoveDir.Left:
-                    vx -= intensity;
-                    break;
-                case MouseMoveDir.Right:
-                    vx += intensity;
-                    break;
+                switch (o.MoveDir)
+                {
+                    case MouseMoveDir.Up:
+                        vy -= intensity;
+                        break;
+                    case MouseMoveDir.Down:
+                        vy += intensity;
+                        break;
+                    case MouseMoveDir.Left:
+                        vx -= intensity;
+                        break;
+                    case MouseMoveDir.Right:
+                        vx += intensity;
+                        break;
+                }
+            }
+            else if (o.Type == OutputType.MouseWheel)
+            {
+                if (o.MoveDir == MouseMoveDir.Up) scrollV += intensity;
+                else if (o.MoveDir == MouseMoveDir.Down) scrollV -= intensity;
             }
         }
 
-        if (vx == 0f && vy == 0f)
+        // Handle cursor movement
+        if (vx != 0f || vy != 0f)
+        {
+            float targetDx = vx * mouseSpeed + mouseRemainderX;
+            float targetDy = vy * mouseSpeed + mouseRemainderY;
+
+            int stepX = (int)MathF.Round(targetDx);
+            int stepY = (int)MathF.Round(targetDy);
+
+            mouseRemainderX = targetDx - stepX;
+            mouseRemainderY = targetDy - stepY;
+
+            if (stepX != 0 || stepY != 0)
+            {
+                InputOut.SendMouseMove(stepX, stepY);
+            }
+        }
+        else
         {
             mouseRemainderX = 0f;
             mouseRemainderY = 0f;
-            return;
         }
 
-        // Clamp vector magnitude if exceeding 1.0
-        float mag = MathF.Sqrt(vx * vx + vy * vy);
-        if (mag > 1.0f)
+        // Handle mouse wheel scrolling (WHEEL_DELTA = 120 per notch)
+        if (scrollV != 0f)
         {
-            vx /= mag;
-            vy /= mag;
+            float targetScroll = scrollV * (mouseSpeed * 3.5f) + scrollRemainder;
+            int stepScroll = (int)MathF.Round(targetScroll / 120f) * 120;
+            if (stepScroll == 0 && MathF.Abs(targetScroll) >= 60f)
+            {
+                stepScroll = targetScroll > 0 ? 120 : -120;
+            }
+
+            scrollRemainder = targetScroll - stepScroll;
+            if (stepScroll != 0)
+            {
+                InputOut.SendMouseWheel(stepScroll);
+            }
         }
-
-        float targetDx = vx * mouseSpeed + mouseRemainderX;
-        float targetDy = vy * mouseSpeed + mouseRemainderY;
-
-        int stepX = (int)MathF.Round(targetDx);
-        int stepY = (int)MathF.Round(targetDy);
-
-        mouseRemainderX = targetDx - stepX;
-        mouseRemainderY = targetDy - stepY;
-
-        if (stepX != 0 || stepY != 0)
+        else
         {
-            InputOut.SendMouseMove(stepX, stepY);
+            scrollRemainder = 0f;
         }
     }
 
@@ -452,44 +545,57 @@ class MainForm : Form
 
     void ConnectRemote()
     {
-        try
+        wmManager = new DolphinWiimoteManager();
+        wmManager.StatusChanged += newStatus =>
         {
-            wm = new Wiimote();
-            wm.WiimoteChanged += OnChanged;
-            wm.Connect();
-            // Report mode with buttons + accelerometer + extension data (needed for the Nunchuk).
-            // If this name is underlined, type "InputReport." and pick the one with Extension and Accel.
-            wm.SetReportType(InputReport.ExtensionAccel, true);
-            status = "Connected";
-        }
-        catch (Exception ex)
-        {
-            status = "Not connected: " + ex.Message;
-        }
-        Invalidate();
+            status = newStatus;
+            if (IsHandleCreated)
+                BeginInvoke(new Action(() => Invalidate()));
+        };
+        wmManager.InputChanged += OnChanged;
+        wmManager.Start();
     }
 
     // Runs on a background thread, so only store state, send input, and ask the UI to repaint.
-    void OnChanged(object? sender, WiimoteChangedEventArgs e)
+    void OnChanged(WiimoteInputState s)
     {
-        var s = e.WiimoteState.ButtonState;
-        var n = e.WiimoteState.NunchukState;
-
         // Stick position, with a small dead zone so it doesn't jitter at rest.
-        float jx = Math.Clamp(n.Joystick.X, -1f, 1f);
-        float jy = Math.Clamp(n.Joystick.Y, -1f, 1f);
+        float jx = Math.Clamp(s.StickX, -1f, 1f);
+        float jy = Math.Clamp(s.StickY, -1f, 1f);
         if (MathF.Abs(jx) < 0.08f) jx = 0;
         if (MathF.Abs(jy) < 0.08f) jy = 0;
 
         const float T = 0.5f;   // how far the stick must be pushed to count as a direction press
+        const float AccelDeadzone = 0.35f; // deadzone in g (neutral ~0g baseline for tilt/shake)
+        const float GyroDeadzone = 45f;    // deadzone in deg/s
+
         int m = (s.A ? 1 : 0) | (s.B ? 2 : 0) | (s.One ? 4 : 0) | (s.Two ? 8 : 0)
               | (s.Plus ? 16 : 0) | (s.Minus ? 32 : 0) | (s.Home ? 64 : 0)
               | (s.Up ? 128 : 0) | (s.Down ? 256 : 0) | (s.Left ? 512 : 0) | (s.Right ? 1024 : 0)
-              | (n.C ? NunchukC : 0) | (n.Z ? NunchukZ : 0)
+              | (s.NunchukC ? NunchukC : 0) | (s.NunchukZ ? NunchukZ : 0)
               | (jy > T ? StickUp : 0) | (jy < -T ? StickDown : 0)
-              | (jx < -T ? StickLeft : 0) | (jx > T ? StickRight : 0);
+              | (jx < -T ? StickLeft : 0) | (jx > T ? StickRight : 0)
+              | (s.AccelX > AccelDeadzone ? AccelXUp : 0) | (s.AccelX < -AccelDeadzone ? AccelXDown : 0)
+              | (s.AccelY > AccelDeadzone ? AccelYUp : 0) | (s.AccelY < -AccelDeadzone ? AccelYDown : 0)
+              | (s.AccelZ > AccelDeadzone ? AccelZUp : 0) | (s.AccelZ < -AccelDeadzone ? AccelZDown : 0)
+              | (s.MotionPlusActive && s.GyroYaw > GyroDeadzone ? GyroYawUp : 0)
+              | (s.MotionPlusActive && s.GyroYaw < -GyroDeadzone ? GyroYawDown : 0)
+              | (s.MotionPlusActive && s.GyroRoll > GyroDeadzone ? GyroRollUp : 0)
+              | (s.MotionPlusActive && s.GyroRoll < -GyroDeadzone ? GyroRollDown : 0)
+              | (s.MotionPlusActive && s.GyroPitch > GyroDeadzone ? GyroPitchUp : 0)
+              | (s.MotionPlusActive && s.GyroPitch < -GyroDeadzone ? GyroPitchDown : 0);
 
         bool stickMoved = MathF.Abs(jx - stickX) > 0.02f || MathF.Abs(jy - stickY) > 0.02f;
+
+        // Motion data: store it and repaint at most ~30 times per second.
+        motion = s;
+        long now = Environment.TickCount64;
+        if (now - lastMotionPaint > 33 && IsHandleCreated)
+        {
+            lastMotionPaint = now;
+            BeginInvoke(new Action(() => Invalidate()));
+        }
+
         if (m == mask && !stickMoved) return;
 
         stickX = jx;
@@ -572,10 +678,47 @@ class MainForm : Form
         g.DrawString("Nunchuk", Font, Brushes.White,
             new RectangleF(0, nRect.Bottom + 4, LeftW, 20), Center);
 
+        // Accelerometer / gyroscope readout (20px further down, side-by-side 4-row x 2-column table)
+        if (motion is { } mo)
+        {
+            float tableTop = nRect.Bottom + 94; // shifted 40px down from +54
+            float col1X = 8f;
+            float col2X = 108f; // 100px apart from col1X (8 + 100 = 108)
+
+            string accelCol = $"Accel (g)\n X {mo.AccelX,5:F2}\n Y {mo.AccelY,5:F2}\n Z {mo.AccelZ,5:F2}";
+            string gyroCol = mo.MotionPlusActive
+                ? $"Gyro (deg/s)\n Yaw   {mo.GyroYaw,5:F0}\n Roll  {mo.GyroRoll,5:F0}\n Pitch {mo.GyroPitch,5:F0}"
+                : "Gyro\n (M+ off)\n -\n -";
+
+            g.DrawString(accelCol, Font, Brushes.White, new PointF(col1X, tableTop));
+            g.DrawString(gyroCol, Font, Brushes.White, new PointF(col2X, tableTop));
+        }
+
         // ---- Middle: the remote and the B trigger ----
         g.TranslateTransform(LeftW, topPad);
 
         g.DrawImage(img, 0, 0, drawW, drawH);
+
+        // Player 1 LED indicator: light-emitting blue dot on the first gray dot below the 2 button when connected
+        if (wmManager?.IsConnected == true)
+        {
+            float ledCx = 0.2377f * drawW;
+            float ledCy = 0.8820f * drawH;
+            float ledR = 0.025f * drawW;
+
+            using var outerGlow1 = new SolidBrush(Color.FromArgb(45, 0, 150, 255));
+            using var outerGlow2 = new SolidBrush(Color.FromArgb(95, 20, 180, 255));
+            using var midGlow = new SolidBrush(Color.FromArgb(180, 40, 200, 255));
+            using var coreBrush = new SolidBrush(Color.FromArgb(255, 0, 175, 255));
+            using var centerBrush = new SolidBrush(Color.FromArgb(255, 200, 245, 255));
+
+            g.FillEllipse(outerGlow1, ledCx - ledR * 2.6f, ledCy - ledR * 2.6f, ledR * 5.2f, ledR * 5.2f);
+            g.FillEllipse(outerGlow2, ledCx - ledR * 1.8f, ledCy - ledR * 1.8f, ledR * 3.6f, ledR * 3.6f);
+            g.FillEllipse(midGlow, ledCx - ledR * 1.25f, ledCy - ledR * 1.25f, ledR * 2.5f, ledR * 2.5f);
+            g.FillEllipse(coreBrush, ledCx - ledR, ledCy - ledR, ledR * 2f, ledR * 2f);
+            g.FillEllipse(centerBrush, ledCx - ledR * 0.45f, ledCy - ledR * 0.45f, ledR * 0.9f, ledR * 0.9f);
+        }
+
         foreach (var h in Hots)
         {
             var r = new RectangleF(h.X * drawW, h.Y * drawH, h.W * drawW, h.H * drawH);
@@ -647,11 +790,19 @@ static class InputOut
     const uint KEYEVENTF_KEYUP = 0x0002;
     const uint KEYEVENTF_SCANCODE = 0x0008;
     const uint MOUSEEVENTF_MOVE = 0x0001;
+    const uint MOUSEEVENTF_WHEEL = 0x0800;
 
     public static void Send(Output o, bool down)
     {
         if (o.Type == OutputType.MouseButton) SendMouse(o.Code, down);
         else if (o.Type == OutputType.Keyboard) SendKey(o.Code, o.Extended, down);
+    }
+
+    public static void SendMouseWheel(int scrollDelta)
+    {
+        var i = new INPUT { type = 0 };   // 0 = mouse
+        i.u.mi = new MOUSEINPUT { mouseData = (uint)scrollDelta, dwFlags = MOUSEEVENTF_WHEEL };
+        SendInput(1, new[] { i }, Marshal.SizeOf<INPUT>());
     }
 
     public static void SendMouseMove(int dx, int dy)
