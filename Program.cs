@@ -2,6 +2,9 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Nefarius.ViGEm.Client;
+using Nefarius.ViGEm.Client.Targets;
+using Nefarius.ViGEm.Client.Targets.Xbox360;
 using WiiRemoteMouse;
 using PointF = System.Drawing.PointF;
 
@@ -20,7 +23,7 @@ if (missing.Length > 0)
 Application.Run(new MainForm(Img("remote.png"), Img("bbutton.png"),
                              Img("nunchuk.png"), Img("nunchuk_c.png"), Img("nunchuk_z.png")));
 
-enum OutputType { Keyboard, MouseButton, MouseMove, MouseWheel }
+enum OutputType { Keyboard, MouseButton, MouseMove, MouseWheel, GamepadButton, GamepadAxis, GamepadTrigger }
 enum MouseMoveDir { Up, Down, Left, Right }
 
 // A keyboard key (by scan code), a mouse button, directional mouse cursor movement, or mouse scroll.
@@ -28,8 +31,8 @@ record Output(string Name, OutputType Type, ushort Code, bool Extended = false, 
 
 class MainForm : Form
 {
-    record Hot(int Bit, float X, float Y, float W, float H, bool Round);
-    record Source(string Name, int Bit);
+    record Hot(long Bit, float X, float Y, float W, float H, bool Round);
+    record Source(string Name, long Bit);
 
     // Positions are fractions of the remote image size: X, Y = top-left corner, W, H = size.
     static readonly Hot[] Hots =
@@ -47,44 +50,59 @@ class MainForm : Form
     };
 
     // Bit flags for the extra inputs.
-    const int NunchukC = 2048;
-    const int NunchukZ = 4096;
-    const int StickUp = 8192;
-    const int StickDown = 16384;
-    const int StickLeft = 32768;
-    const int StickRight = 65536;
+    const long NunchukC = 2048;
+    const long NunchukZ = 4096;
+    const long StickUp = 8192;
+    const long StickDown = 16384;
+    const long StickLeft = 32768;
+    const long StickRight = 65536;
 
     // Motion bit flags (mapped inputs)
-    const int AccelXUp = 1 << 17;
-    const int AccelXDown = 1 << 18;
-    const int AccelYUp = 1 << 19;
-    const int AccelYDown = 1 << 20;
-    const int AccelZUp = 1 << 21;
-    const int AccelZDown = 1 << 22;
+    const long AccelXUp = 1L << 17;
+    const long AccelXDown = 1L << 18;
+    const long AccelYUp = 1L << 19;
+    const long AccelYDown = 1L << 20;
+    const long AccelZUp = 1L << 21;
+    const long AccelZDown = 1L << 22;
 
-    const int GyroYawUp = 1 << 23;
-    const int GyroYawDown = 1 << 24;
-    const int GyroRollUp = 1 << 25;
-    const int GyroRollDown = 1 << 26;
-    const int GyroPitchUp = 1 << 27;
-    const int GyroPitchDown = 1 << 28;
+    const long GyroYawUp = 1L << 23;
+    const long GyroYawDown = 1L << 24;
+    const long GyroRollUp = 1L << 25;
+    const long GyroRollDown = 1L << 26;
+    const long GyroPitchUp = 1L << 27;
+    const long GyroPitchDown = 1L << 28;
+    const long SteerLeft = 1L << 29;
+    const long SteerRight = 1L << 30;
+    const long PointUp = 1L << 31;
+    const long PointDown = 1L << 32;
+    const long PointLeft = 1L << 33;
+    const long PointRight = 1L << 34;
 
-    // Every Wii input that can be assigned, in the order shown in the panel.
+    // Every Wii input that can be assigned, grouped by category.
     static readonly Source[] Sources =
     {
-        new("C", NunchukC), new("Z", NunchukZ),
+        // Wii Remote
         new("A", 1), new("B", 2), new("1", 4), new("2", 8),
         new("Plus (+)", 16), new("Minus (-)", 32), new("Home", 64),
         new("D-pad Up", 128), new("D-pad Down", 256), new("D-pad Left", 512), new("D-pad Right", 1024),
+
+        // Nunchuck
+        new("C", NunchukC), new("Z", NunchukZ),
         new("Stick Up", StickUp), new("Stick Down", StickDown),
         new("Stick Left", StickLeft), new("Stick Right", StickRight),
 
+        // Motion -> Angle
+        new("Steer Left", SteerLeft), new("Steer Right", SteerRight),
+        new("Pitch Up", PointUp), new("Pitch Down", PointDown),
+        new("Roll Left", PointLeft), new("Roll Right", PointRight),
+
+        // Motion -> Accel
         new("Accel X Up", AccelXUp), new("Accel X Down", AccelXDown),
         new("Accel Y Up", AccelYUp), new("Accel Y Down", AccelYDown),
         new("Accel Z Up", AccelZUp), new("Accel Z Down", AccelZDown),
 
+        // Motion -> Gyro
         new("Gyro Left", GyroYawUp), new("Gyro Right", GyroYawDown),
-        new("Roll Right", GyroRollUp), new("Roll Left", GyroRollDown),
         new("Gyro Down", GyroPitchUp), new("Gyro Up", GyroPitchDown),
     };
 
@@ -138,6 +156,34 @@ class MainForm : Form
         return l.ToArray();
     }
 
+    static readonly Output[] GamepadOutputs =
+    {
+        new("Left Analog Left", OutputType.GamepadAxis, 0, MoveDir: MouseMoveDir.Left),
+        new("Left Analog Right", OutputType.GamepadAxis, 0, MoveDir: MouseMoveDir.Right),
+        new("Left Analog Up", OutputType.GamepadAxis, 0, MoveDir: MouseMoveDir.Up),
+        new("Left Analog Down", OutputType.GamepadAxis, 0, MoveDir: MouseMoveDir.Down),
+        new("Right Analog Left", OutputType.GamepadAxis, 1, MoveDir: MouseMoveDir.Left),
+        new("Right Analog Right", OutputType.GamepadAxis, 1, MoveDir: MouseMoveDir.Right),
+        new("Right Analog Up", OutputType.GamepadAxis, 1, MoveDir: MouseMoveDir.Up),
+        new("Right Analog Down", OutputType.GamepadAxis, 1, MoveDir: MouseMoveDir.Down),
+        new("Left Trigger (LT)", OutputType.GamepadTrigger, 0),
+        new("Right Trigger (RT)", OutputType.GamepadTrigger, 1),
+        new("A", OutputType.GamepadButton, 0),
+        new("B", OutputType.GamepadButton, 1),
+        new("X", OutputType.GamepadButton, 2),
+        new("Y", OutputType.GamepadButton, 3),
+        new("LB", OutputType.GamepadButton, 4),
+        new("RB", OutputType.GamepadButton, 5),
+        new("Start", OutputType.GamepadButton, 6),
+        new("Back", OutputType.GamepadButton, 7),
+        new("Left Stick (LS)", OutputType.GamepadButton, 8),
+        new("Right Stick (RS)", OutputType.GamepadButton, 9),
+        new("D-Pad Up", OutputType.GamepadButton, 10),
+        new("D-Pad Down", OutputType.GamepadButton, 11),
+        new("D-Pad Left", OutputType.GamepadButton, 12),
+        new("D-Pad Right", OutputType.GamepadButton, 13),
+    };
+
     const float LeftW = 190f;    // left panel (Nunchuk)
     const int PanelW = 455;      // right panel (assignments) (total width 890)
 
@@ -152,11 +198,15 @@ class MainForm : Form
     readonly Image img, bImg, nImg, cImg, zImg;
     readonly float drawW, drawH;
     readonly RectangleF cRect, zRect, nRect;
+    static readonly long[] SourceBits = Array.ConvertAll(Sources, s => s.Bit);
     readonly Output?[] assigned = new Output?[Sources.Length];
+    readonly Output?[] gamepadAssigned = new Output?[Sources.Length];
+    readonly ComboBox[] assignCombos = new ComboBox[Sources.Length];
+    bool updatingCombos;
     readonly Label outLabel;
     readonly System.Windows.Forms.Timer moveTimer;
     DolphinWiimoteManager? wmManager;
-    int mask;
+    long mask;
     float stickX, stickY;
     volatile WiimoteInputState? motion;
     long lastMotionPaint;
@@ -165,7 +215,12 @@ class MainForm : Form
     float mouseRemainderX = 0f;
     float mouseRemainderY = 0f;
     float scrollRemainder = 0f;
+    Point steerOrigin;
+    int lastSteerPxX = 0;
+    int lastSteerPxY = 0;
     const float topPad = 45f;
+    bool gamepadMode = false;
+    readonly GamepadOut gamepadOut = new();
     volatile bool appActive;   // true while this window is in front
     string status = "Connecting...";
     PointF? firstClick;
@@ -200,7 +255,7 @@ class MainForm : Form
         nRect = new RectangleF(LeftW / 2 - nW / 2, zRect.Bottom + 20, nW, nH);
 
         Text = "Wii Remote Input";
-        ClientSize = new Size(895, 940);
+        ClientSize = new Size(895, 1020);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         DoubleBuffered = true;
@@ -213,21 +268,57 @@ class MainForm : Form
             Left = (int)(LeftW + drawW + 110),
             Top = 0,
             Width = PanelW,
-            Height = 940,
+            Height = 1020,
             BackColor = Color.FromArgb(50, 50, 56)
         };
         Controls.Add(panel);
 
         panel.Controls.Add(new Label
         {
-            Text = "Assign keys / mouse buttons and movement",
+            Text = "Output Mode",
             ForeColor = Color.White,
             Font = new Font(Font, FontStyle.Bold),
             Left = 12,
             Top = 14,
-            Width = PanelW - 24,
+            Width = 100,
             Height = 24
         });
+
+        var modeCombo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Left = 160,
+            Top = 10,
+            Width = 240
+        };
+        modeCombo.Items.AddRange(new object[] { "Keyboard & Mouse", "Gamepad (Xbox 360)" });
+        modeCombo.SelectedIndex = 0;
+        modeCombo.SelectedIndexChanged += (_, _) =>
+        {
+            bool wantGamepad = modeCombo.SelectedIndex == 1;
+            if (wantGamepad)
+            {
+                if (!gamepadOut.TryConnect(out var err))
+                {
+                    MessageBox.Show(
+                        "Could not start virtual Xbox 360 controller.\n" +
+                        "Make sure the ViGEmBus driver is installed.\n\n" + err,
+                        "ViGEmBus Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    modeCombo.SelectedIndex = 0;
+                    return;
+                }
+                ReleaseAll();
+                gamepadMode = true;
+                RefreshAssignCombos();
+            }
+            else
+            {
+                gamepadMode = false;
+                gamepadOut.Disconnect();
+                RefreshAssignCombos();
+            }
+        };
+        panel.Controls.Add(modeCombo);
 
         // Mouse Sensitivity: "Sensitivity", value label (1-10), and slider (moved down by 20px)
         var speedLbl = new Label
@@ -270,28 +361,71 @@ class MainForm : Form
         panel.Controls.Add(valLbl);
         panel.Controls.Add(speedTrack);
 
+        var clearBtn = new Button
+        {
+            Text = "Clear All Bindings",
+            Left = 160,
+            Top = 100,
+            Width = 240,
+            Height = 32,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(60, 60, 65),
+            ForeColor = Color.White
+        };
+        clearBtn.Click += (_, _) =>
+        {
+            var current = gamepadMode ? gamepadAssigned : assigned;
+            if (!gamepadMode) ReleaseAll();
+            Array.Clear(current, 0, current.Length);
+            RefreshAssignCombos();
+            SaveMapping();
+        };
+        panel.Controls.Add(clearBtn);
+
         var names = new[] { "(none)" }.Concat(Outputs.Select(o => o.Name)).ToArray();
 
-        // Scrollable container for assignment dropdowns
+        // Scrollable container for binding dropdowns
         var scrollPanel = new Panel
         {
             Left = 0,
-            Top = 115,
+            Top = 145,
             Width = PanelW,
-            Height = 720,
+            Height = 760,
             AutoScroll = true
         };
         panel.Controls.Add(scrollPanel);
 
+        int y = 8;
+        void AddHeader(string text, bool sub = false)
+        {
+            if (y > 8) y += sub ? 4 : 10;
+            scrollPanel.Controls.Add(new Label
+            {
+                Text = text,
+                ForeColor = sub ? Color.LightSkyBlue : Color.DeepSkyBlue,
+                Font = new Font(Font, FontStyle.Bold),
+                Left = 12,
+                Top = y,
+                AutoSize = true
+            });
+            y += 24;
+        }
+
         for (int i = 0; i < Sources.Length; i++)
         {
+            if (i == 0) AddHeader("Wii Remote");
+            else if (i == 11) AddHeader("Nunchuck");
+            else if (i == 17) { AddHeader("Motion"); AddHeader("Angle", sub: true); }
+            else if (i == 23) AddHeader("Accel", sub: true);
+            else if (i == 29) AddHeader("Gyro", sub: true);
+
             int row = i;
             var lbl = new Label
             {
                 Text = Sources[i].Name,
                 ForeColor = Color.White,
                 Left = 12,
-                Top = 10 + i * 31 + 4,
+                Top = y + 4,
                 Width = 145,
                 Height = 24
             };
@@ -299,10 +433,11 @@ class MainForm : Form
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Left = 160,
-                Top = 10 + i * 31,
+                Top = y,
                 Width = 240,
                 MaxDropDownItems = 16
             };
+            y += 31;
             cb.Items.AddRange(names);
 
             int sel = 0;
@@ -328,8 +463,43 @@ class MainForm : Form
             }
             cb.SelectedIndex = sel;
             assigned[i] = sel == 0 ? null : Outputs[sel - 1];
+            assignCombos[i] = cb;
 
-            cb.SelectedIndexChanged += (_, _) => OnAssignChanged(row, cb.SelectedIndex);
+            string? gpDefault = Sources[i].Name switch
+            {
+                "Steer Left" => "Left Analog Left",
+                "Steer Right" => "Left Analog Right",
+                "Stick Left" => "Right Analog Left",
+                "Stick Right" => "Right Analog Right",
+                "Stick Up" => "Right Analog Up",
+                "Stick Down" => "Right Analog Down",
+                "2" => "Right Trigger (RT)",
+                "1" => "Left Trigger (LT)",
+                "A" => "B",
+                "B" => "RB",
+                "Z" => "LB",
+                "C" => "Y",
+                "Plus" => "Start",
+                "Minus" => "Back",
+                "Up" => "D-Pad Up",
+                "Down" => "D-Pad Down",
+                "Left" => "D-Pad Left",
+                "Right" => "D-Pad Right",
+                _ => null
+            };
+            string? gpName = saved.GamepadMappings != null && saved.GamepadMappings.TryGetValue(lookupKey, out var savedGp)
+                ? savedGp
+                : (saved.GamepadMappings == null ? gpDefault : null);
+            if (gpName != null)
+            {
+                int gpIdx = Array.FindIndex(GamepadOutputs, o => o.Name == gpName);
+                if (gpIdx >= 0) gamepadAssigned[i] = GamepadOutputs[gpIdx];
+            }
+
+            cb.SelectedIndexChanged += (_, _) =>
+            {
+                if (!updatingCombos) OnAssignChanged(row, cb.SelectedIndex);
+            };
             scrollPanel.Controls.Add(lbl);
             scrollPanel.Controls.Add(cb);
         }
@@ -343,7 +513,7 @@ class MainForm : Form
         {
             ForeColor = Color.Gainsboro,
             Left = 12,
-            Top = 850,
+            Top = 930,
             Width = PanelW - 24,
             Height = 55,
             Text = "Output paused: this window is active.\nSwitch to your game to send keys."
@@ -366,6 +536,8 @@ class MainForm : Form
         Deactivate += (_, _) =>
         {
             appActive = false;
+            lastSteerPxX = 0;
+            lastSteerPxY = 0;
             outLabel.Text = "Output active.";
         };
 
@@ -373,15 +545,22 @@ class MainForm : Form
         FormClosed += (_, _) =>
         {
             ReleaseAll();
+            gamepadOut.Dispose();
             try { wmManager?.Dispose(); } catch { }
         };
     }
 
-    record AppConfig(Dictionary<string, string> Mappings, int Speed = 14);
+    record AppConfig(Dictionary<string, string> Mappings, int Speed = 14, Dictionary<string, string>? GamepadMappings = null);
 
     void OnMoveTimerTick(object? sender, EventArgs e)
     {
         if (appActive) return;
+        if (gamepadMode)
+        {
+            if (motion is not { } mo) return;
+            gamepadOut.Update(mo, mask, gamepadAssigned, SourceBits);
+            return;
+        }
 
         float vx = 0f;
         float vy = 0f;
@@ -392,7 +571,7 @@ class MainForm : Form
             var o = assigned[i];
             if (o is null || (o.Type != OutputType.MouseMove && o.Type != OutputType.MouseWheel)) continue;
 
-            int bit = Sources[i].Bit;
+            long bit = Sources[i].Bit;
             bool active = (mask & bit) != 0;
 
             // Determine intensity: if it's stick or motion input, scale proportionally with deflection / swing speed!
@@ -401,6 +580,14 @@ class MainForm : Form
             else if (bit == StickDown && stickY < -0.08f) intensity = -stickY;
             else if (bit == StickLeft && stickX < -0.08f) intensity = -stickX;
             else if (bit == StickRight && stickX > 0.08f) intensity = stickX;
+            // Steering roll angle: continuous velocity just like pitch/roll
+            else if (bit == SteerLeft && motion != null && motion.SteeringRollAngle < 0f) intensity = -motion.SteeringRollAngle / 45f;
+            else if (bit == SteerRight && motion != null && motion.SteeringRollAngle > 0f) intensity = motion.SteeringRollAngle / 45f;
+            // Pointing up/down pitch & left/right roll angles (held straight): deadzoned at ±3° and clamped to ±90°
+            else if (bit == PointUp && motion != null && motion.PointPitchAngle < 0f) intensity = -motion.PointPitchAngle / 45f;
+            else if (bit == PointDown && motion != null && motion.PointPitchAngle > 0f) intensity = motion.PointPitchAngle / 45f;
+            else if (bit == PointLeft && motion != null && motion.PointRollAngle < 0f) intensity = -motion.PointRollAngle / 45f;
+            else if (bit == PointRight && motion != null && motion.PointRollAngle > 0f) intensity = motion.PointRollAngle / 45f;
             // Accelerometer: 0.35g threshold, scaling up smoothly with swing acceleration
             else if (bit == AccelXUp && motion != null && motion.AccelX > 0.35f) intensity = (motion.AccelX - 0.35f) * 1.8f;
             else if (bit == AccelXDown && motion != null && motion.AccelX < -0.35f) intensity = (-motion.AccelX - 0.35f) * 1.8f;
@@ -417,7 +604,7 @@ class MainForm : Form
             else if (bit == GyroPitchDown && motion is { MotionPlusActive: true } && motion.GyroPitch < -30f) intensity = (-motion.GyroPitch - 30f) / 75f;
             else if (active) intensity = 1.0f;
 
-            if (intensity <= 0.01f) continue;
+            if (intensity <= 0.0001f) continue;
 
             if (o.Type == OutputType.MouseMove)
             {
@@ -444,21 +631,21 @@ class MainForm : Form
             }
         }
 
-        // Handle cursor movement
+        // Handle continuous cursor movement
         if (vx != 0f || vy != 0f)
         {
             float targetDx = vx * mouseSpeed + mouseRemainderX;
             float targetDy = vy * mouseSpeed + mouseRemainderY;
 
-            int stepX = (int)MathF.Round(targetDx);
-            int stepY = (int)MathF.Round(targetDy);
+            int contStepX = (int)MathF.Round(targetDx);
+            int contStepY = (int)MathF.Round(targetDy);
 
-            mouseRemainderX = targetDx - stepX;
-            mouseRemainderY = targetDy - stepY;
+            mouseRemainderX = targetDx - contStepX;
+            mouseRemainderY = targetDy - contStepY;
 
-            if (stepX != 0 || stepY != 0)
+            if (contStepX != 0 || contStepY != 0)
             {
-                InputOut.SendMouseMove(stepX, stepY);
+                InputOut.SendMouseMove(contStepX, contStepY);
             }
         }
         else
@@ -489,8 +676,40 @@ class MainForm : Form
         }
     }
 
+    void RefreshAssignCombos()
+    {
+        updatingCombos = true;
+        try
+        {
+            var list = gamepadMode ? GamepadOutputs : Outputs;
+            var current = gamepadMode ? gamepadAssigned : assigned;
+            for (int i = 0; i < Sources.Length; i++)
+            {
+                var cb = assignCombos[i];
+                if (cb is null) continue;
+                cb.BeginUpdate();
+                cb.Items.Clear();
+                cb.Items.Add("(none)");
+                foreach (var o in list) cb.Items.Add(o.Name);
+                int idx = current[i] is { } selOut ? Array.IndexOf(list, selOut) : -1;
+                cb.SelectedIndex = idx >= 0 ? idx + 1 : 0;
+                cb.EndUpdate();
+            }
+        }
+        finally
+        {
+            updatingCombos = false;
+        }
+    }
+
     void OnAssignChanged(int i, int comboIndex)
     {
+        if (gamepadMode)
+        {
+            gamepadAssigned[i] = comboIndex <= 0 ? null : GamepadOutputs[comboIndex - 1];
+            SaveMapping();
+            return;
+        }
         var old = assigned[i];
         if (old is not null && old.Type != OutputType.MouseMove)
             InputOut.Send(old, false);   // don't leave the old output stuck down
@@ -537,7 +756,10 @@ class MainForm : Form
             var d = new Dictionary<string, string>();
             for (int i = 0; i < Sources.Length; i++)
                 if (assigned[i] is not null) d[Sources[i].Name] = assigned[i]!.Name;
-            var config = new AppConfig(d, currentSensitivity);
+            var gp = new Dictionary<string, string>();
+            for (int i = 0; i < Sources.Length; i++)
+                if (gamepadAssigned[i] is not null) gp[Sources[i].Name] = gamepadAssigned[i]!.Name;
+            var config = new AppConfig(d, currentSensitivity, gp);
             File.WriteAllText(MapPath, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
@@ -568,22 +790,29 @@ class MainForm : Form
         const float T = 0.5f;   // how far the stick must be pushed to count as a direction press
         const float AccelDeadzone = 0.35f; // deadzone in g (neutral ~0g baseline for tilt/shake)
         const float GyroDeadzone = 45f;    // deadzone in deg/s
+        const float TiltPressThreshold = 15f; // degrees of tilt required to trigger a digital key press
 
-        int m = (s.A ? 1 : 0) | (s.B ? 2 : 0) | (s.One ? 4 : 0) | (s.Two ? 8 : 0)
-              | (s.Plus ? 16 : 0) | (s.Minus ? 32 : 0) | (s.Home ? 64 : 0)
-              | (s.Up ? 128 : 0) | (s.Down ? 256 : 0) | (s.Left ? 512 : 0) | (s.Right ? 1024 : 0)
-              | (s.NunchukC ? NunchukC : 0) | (s.NunchukZ ? NunchukZ : 0)
-              | (jy > T ? StickUp : 0) | (jy < -T ? StickDown : 0)
-              | (jx < -T ? StickLeft : 0) | (jx > T ? StickRight : 0)
-              | (s.AccelX > AccelDeadzone ? AccelXUp : 0) | (s.AccelX < -AccelDeadzone ? AccelXDown : 0)
-              | (s.AccelY > AccelDeadzone ? AccelYUp : 0) | (s.AccelY < -AccelDeadzone ? AccelYDown : 0)
-              | (s.AccelZ > AccelDeadzone ? AccelZUp : 0) | (s.AccelZ < -AccelDeadzone ? AccelZDown : 0)
-              | (s.MotionPlusActive && s.GyroYaw > GyroDeadzone ? GyroYawUp : 0)
-              | (s.MotionPlusActive && s.GyroYaw < -GyroDeadzone ? GyroYawDown : 0)
-              | (s.MotionPlusActive && s.GyroRoll > GyroDeadzone ? GyroRollUp : 0)
-              | (s.MotionPlusActive && s.GyroRoll < -GyroDeadzone ? GyroRollDown : 0)
-              | (s.MotionPlusActive && s.GyroPitch > GyroDeadzone ? GyroPitchUp : 0)
-              | (s.MotionPlusActive && s.GyroPitch < -GyroDeadzone ? GyroPitchDown : 0);
+        long m = (s.A ? 1L : 0) | (s.B ? 2L : 0) | (s.One ? 4L : 0) | (s.Two ? 8L : 0)
+               | (s.Plus ? 16L : 0) | (s.Minus ? 32L : 0) | (s.Home ? 64L : 0)
+               | (s.Up ? 128L : 0) | (s.Down ? 256L : 0) | (s.Left ? 512L : 0) | (s.Right ? 1024L : 0)
+               | (s.NunchukC ? NunchukC : 0) | (s.NunchukZ ? NunchukZ : 0)
+               | (jy > T ? StickUp : 0) | (jy < -T ? StickDown : 0)
+               | (jx < -T ? StickLeft : 0) | (jx > T ? StickRight : 0)
+               | (s.SteeringRollAngle < -TiltPressThreshold ? SteerLeft : 0)
+               | (s.SteeringRollAngle > TiltPressThreshold ? SteerRight : 0)
+               | (s.PointPitchAngle < -TiltPressThreshold ? PointUp : 0)
+               | (s.PointPitchAngle > TiltPressThreshold ? PointDown : 0)
+               | (s.PointRollAngle < -TiltPressThreshold ? PointLeft : 0)
+               | (s.PointRollAngle > TiltPressThreshold ? PointRight : 0)
+               | (s.AccelX > AccelDeadzone ? AccelXUp : 0) | (s.AccelX < -AccelDeadzone ? AccelXDown : 0)
+               | (s.AccelY > AccelDeadzone ? AccelYUp : 0) | (s.AccelY < -AccelDeadzone ? AccelYDown : 0)
+               | (s.AccelZ > AccelDeadzone ? AccelZUp : 0) | (s.AccelZ < -AccelDeadzone ? AccelZDown : 0)
+               | (s.MotionPlusActive && s.GyroYaw > GyroDeadzone ? GyroYawUp : 0)
+               | (s.MotionPlusActive && s.GyroYaw < -GyroDeadzone ? GyroYawDown : 0)
+               | (s.MotionPlusActive && s.GyroRoll > GyroDeadzone ? GyroRollUp : 0)
+               | (s.MotionPlusActive && s.GyroRoll < -GyroDeadzone ? GyroRollDown : 0)
+               | (s.MotionPlusActive && s.GyroPitch > GyroDeadzone ? GyroPitchUp : 0)
+               | (s.MotionPlusActive && s.GyroPitch < -GyroDeadzone ? GyroPitchDown : 0);
 
         bool stickMoved = MathF.Abs(jx - stickX) > 0.02f || MathF.Abs(jy - stickY) > 0.02f;
 
@@ -600,12 +829,12 @@ class MainForm : Form
 
         stickX = jx;
         stickY = jy;
-        int old = mask;
+        long old = mask;
         mask = m;
 
         // Send the assigned key / mouse button for every input that just changed.
-        int changed = m ^ old;
-        if (!appActive && changed != 0)
+        long changed = m ^ old;
+        if (!appActive && !gamepadMode && changed != 0)
         {
             for (int i = 0; i < Sources.Length; i++)
             {
@@ -678,20 +907,25 @@ class MainForm : Form
         g.DrawString("Nunchuk", Font, Brushes.White,
             new RectangleF(0, nRect.Bottom + 4, LeftW, 20), Center);
 
-        // Accelerometer / gyroscope readout (20px further down, side-by-side 4-row x 2-column table)
+        // Angles / Accelerometer / Gyroscope readout (4-row x 3-column table spanning window width minus assignment panel)
         if (motion is { } mo)
         {
-            float tableTop = nRect.Bottom + 94; // shifted 40px down from +54
+            float tableTop = nRect.Bottom + 94;
+            float availW = Math.Max(300f, ClientSize.Width - PanelW - 16f);
+            float colW = availW / 3f;
             float col1X = 8f;
-            float col2X = 108f; // 100px apart from col1X (8 + 100 = 108)
+            float col2X = col1X + colW;
+            float col3X = col1X + colW * 2f;
 
+            string steerCol = $"Angles\n Steer {mo.SteeringRollAngle,3:F0}°\n Pitch {mo.PointPitchAngle,3:F0}°\n Roll  {mo.PointRollAngle,3:F0}°";
             string accelCol = $"Accel (g)\n X {mo.AccelX,5:F2}\n Y {mo.AccelY,5:F2}\n Z {mo.AccelZ,5:F2}";
             string gyroCol = mo.MotionPlusActive
                 ? $"Gyro (deg/s)\n Yaw   {mo.GyroYaw,5:F0}\n Roll  {mo.GyroRoll,5:F0}\n Pitch {mo.GyroPitch,5:F0}"
                 : "Gyro\n (M+ off)\n -\n -";
 
-            g.DrawString(accelCol, Font, Brushes.White, new PointF(col1X, tableTop));
-            g.DrawString(gyroCol, Font, Brushes.White, new PointF(col2X, tableTop));
+            g.DrawString(steerCol, Font, Brushes.White, new PointF(col1X, tableTop));
+            g.DrawString(accelCol, Font, Brushes.White, new PointF(col2X, tableTop));
+            g.DrawString(gyroCol, Font, Brushes.White, new PointF(col3X, tableTop));
         }
 
         // ---- Middle: the remote and the B trigger ----
@@ -833,4 +1067,122 @@ static class InputOut
         i.u.mi = new MOUSEINPUT { dwFlags = down ? downFlag : (uint)(downFlag << 1) };
         SendInput(1, new[] { i }, Marshal.SizeOf<INPUT>());
     }
+}
+
+sealed class GamepadOut : IDisposable
+{
+    ViGEmClient? client;
+    IXbox360Controller? controller;
+
+    public bool TryConnect(out string error)
+    {
+        if (controller != null) { error = ""; return true; }
+        try
+        {
+            client = new ViGEmClient();
+            controller = client.CreateXbox360Controller();
+            controller.Connect();
+            error = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Disconnect();
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public void Update(WiimoteInputState s, long mask, Output?[] gamepadAssigned, long[] sourceBits)
+    {
+        if (controller == null) return;
+
+        float lx = 0f, ly = 0f, rx = 0f, ry = 0f;
+        bool lt = false, rt = false;
+        bool[] btns = new bool[14];
+
+        for (int i = 0; i < sourceBits.Length; i++)
+        {
+            var o = gamepadAssigned[i];
+            if (o is null) continue;
+            long bit = sourceBits[i];
+
+            if (o.Type == OutputType.GamepadAxis)
+            {
+                float mag = 0f;
+                if (bit == (1L << 29) && s.SteeringRollAngle < 0f) mag = Math.Clamp(-s.SteeringRollAngle / 60f, 0f, 1f); // SteerLeft
+                else if (bit == (1L << 30) && s.SteeringRollAngle > 0f) mag = Math.Clamp(s.SteeringRollAngle / 60f, 0f, 1f); // SteerRight
+                else if (bit == (1L << 11) && s.StickY > 0.12f) mag = Math.Clamp(s.StickY, 0f, 1f); // StickUp
+                else if (bit == (1L << 12) && s.StickY < -0.12f) mag = Math.Clamp(-s.StickY, 0f, 1f); // StickDown
+                else if (bit == (1L << 13) && s.StickX < -0.12f) mag = Math.Clamp(-s.StickX, 0f, 1f); // StickLeft
+                else if (bit == (1L << 14) && s.StickX > 0.12f) mag = Math.Clamp(s.StickX, 0f, 1f); // StickRight
+                else if ((mask & bit) != 0) mag = 1f;
+
+                if (mag > 0f)
+                {
+                    if (o.Code == 0)
+                    {
+                        if (o.MoveDir == MouseMoveDir.Left) lx -= mag;
+                        else if (o.MoveDir == MouseMoveDir.Right) lx += mag;
+                        else if (o.MoveDir == MouseMoveDir.Up) ly += mag;
+                        else if (o.MoveDir == MouseMoveDir.Down) ly -= mag;
+                    }
+                    else
+                    {
+                        if (o.MoveDir == MouseMoveDir.Left) rx -= mag;
+                        else if (o.MoveDir == MouseMoveDir.Right) rx += mag;
+                        else if (o.MoveDir == MouseMoveDir.Up) ry += mag;
+                        else if (o.MoveDir == MouseMoveDir.Down) ry -= mag;
+                    }
+                }
+            }
+            else if ((mask & bit) != 0)
+            {
+                if (o.Type == OutputType.GamepadTrigger)
+                {
+                    if (o.Code == 0) lt = true;
+                    else rt = true;
+                }
+                else if (o.Type == OutputType.GamepadButton && o.Code >= 0 && o.Code < btns.Length)
+                {
+                    btns[o.Code] = true;
+                }
+            }
+        }
+
+        controller.SetAxisValue(Xbox360Axis.LeftThumbX, (short)Math.Clamp(MathF.Round(Math.Clamp(lx, -1f, 1f) * 32767f), -32768, 32767));
+        controller.SetAxisValue(Xbox360Axis.LeftThumbY, (short)Math.Clamp(MathF.Round(Math.Clamp(ly, -1f, 1f) * 32767f), -32768, 32767));
+        controller.SetAxisValue(Xbox360Axis.RightThumbX, (short)Math.Clamp(MathF.Round(Math.Clamp(rx, -1f, 1f) * 32767f), -32768, 32767));
+        controller.SetAxisValue(Xbox360Axis.RightThumbY, (short)Math.Clamp(MathF.Round(Math.Clamp(ry, -1f, 1f) * 32767f), -32768, 32767));
+
+        controller.SetSliderValue(Xbox360Slider.LeftTrigger, lt ? (byte)255 : (byte)0);
+        controller.SetSliderValue(Xbox360Slider.RightTrigger, rt ? (byte)255 : (byte)0);
+
+        controller.SetButtonState(Xbox360Button.A, btns[0]);
+        controller.SetButtonState(Xbox360Button.B, btns[1]);
+        controller.SetButtonState(Xbox360Button.X, btns[2]);
+        controller.SetButtonState(Xbox360Button.Y, btns[3]);
+        controller.SetButtonState(Xbox360Button.LeftShoulder, btns[4]);
+        controller.SetButtonState(Xbox360Button.RightShoulder, btns[5]);
+        controller.SetButtonState(Xbox360Button.Start, btns[6]);
+        controller.SetButtonState(Xbox360Button.Back, btns[7]);
+        controller.SetButtonState(Xbox360Button.LeftThumb, btns[8]);
+        controller.SetButtonState(Xbox360Button.RightThumb, btns[9]);
+        controller.SetButtonState(Xbox360Button.Up, btns[10]);
+        controller.SetButtonState(Xbox360Button.Down, btns[11]);
+        controller.SetButtonState(Xbox360Button.Left, btns[12]);
+        controller.SetButtonState(Xbox360Button.Right, btns[13]);
+
+        controller.SubmitReport();
+    }
+
+    public void Disconnect()
+    {
+        try { controller?.Disconnect(); } catch { }
+        controller = null;
+        try { client?.Dispose(); } catch { }
+        client = null;
+    }
+
+    public void Dispose() => Disconnect();
 }

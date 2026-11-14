@@ -1,42 +1,88 @@
 # WiiRemoteMouse
 
-A Windows application that reads a Nintendo Wii Remote & Nunchuk over Bluetooth and uses its inputs to control the mouse and keyboard. Built in C# (.NET).
+A modern Windows application that connects a Nintendo Wii Remote (with Nunchuk and MotionPlus) and maps its buttons, analog stick, accelerometer, and gyroscope to mouse cursor movement, mouse buttons, scroll wheel actions, and keyboard inputs.
 
-## Status
+Built with C# and .NET 10.
 
-- Pairing and connection to Windows: in-application pairing is in progress; currently requires pairing via Windows Bluetooth (ONLY IF YOU DONT WANT TO MESS WITH THE EMULATOR) or connecting via Dolphin emulator (RECOMMENDED) first
-- Buttons (A, B, 1, 2, +, -, Home, D-pad, C, Z): reading correctly through WiimoteLib
-- Nunchuk analog stick: reading smoothly with analog deflection and dead-zone filtering
-- Mouse control & key mapping: fully working via Windows `SendInput` (directional cursor movement, mouse clicks, and full keyboard keys) with real-time sensitivity slider (1–10) and persistent configuration
-- MotionPlus / gyro: not working yet. The extension reports `Ext:False`, even though the MotionPlus is a genuine RVL-026 unit. Next step is to diagnose the attachment
+---
 
-## Setup
+## Features
 
-Requirements:
-- Windows 10/11 with Bluetooth
-- .NET 10 SDK (`dotnet --version` should print 10.x)
-- A Wii Remote (RVL-CNT-01) and optional Nunchuk
+- **Direct Dolphin-Based Connection & Pairing:**
+  - Integrated Dolphin Emulator connection logic directly in-app.
+  - Automatic continuous Bluetooth discovery and authentication (just press **1 + 2** or **Sync**).
+  - Native Windows overlapped HID communication without needing external tools.
+- **Full Control & Button Mapping:**
+  - **Core Remote Buttons:** A, B (trigger), 1, 2, Plus (+), Minus (-), Home, and D-Pad (Up, Down, Left, Right).
+  - **Nunchuk Extension:** C button, Z button, and full 360° analog stick with smooth deflection and deadzone filtering.
+  - **Visual Status & Feedback:** Real-time visual remote and Nunchuk interface with interactive button glow, analog stick indicator, and a glowing blue Player 1 LED when connected.
+- **6DOF Motion Controls (Accelerometer & Gyroscope):**
+  - Real-time display for 3-axis Accelerometer (g) and 3-axis MotionPlus Gyroscope (deg/s).
+  - Idle zero-point baselines configured to eliminate drift at rest.
+  - **Mappable Motion Axes:** Map gestures (tilt, swing, flick) to keyboard keys, mouse clicks, or cursor movements:
+    - `Accel X Up/Down`, `Accel Y Up/Down`, `Accel Z Up/Down`
+    - `Gyro Left`, `Gyro Right`, `Gyro Up`, `Gyro Down`, `Roll Left`, `Roll Right`
+  - **Velocity-Proportional Dynamics:** Harder or faster swings move the mouse cursor or scroll the wheel proportionally faster.
+- **Mouse & Keyboard Emulation:**
+  - High-performance input injection using Windows `SendInput` (hardware scan codes for gaming compatibility).
+  - Smooth cursor movement with adjustable sensitivity slider (1–10).
+  - Mouse wheel scrolling support (`Mouse Scroll Up` / `Mouse Scroll Down`).
+  - Output is safely paused while the config window is focused, automatically resuming when you switch to your game or app.
+- **Persistent Configuration:**
+  - Automatically saves all key/mouse assignments and sensitivity preferences across sessions in `%AppData%/WiiRemoteMouse/mapping.json`.
 
-Steps:
-1. Connect the remote:
-   - *Recommended:* Connect via the **Dolphin emulator** (Controllers > Emulate the Wii's Bluetooth adapter / Real Wiimote).
-   - *Alternative:* Pair in Windows Settings > Bluetooth & devices > Add device > Bluetooth (press the sync button in the battery compartment, select **Nintendo RVL-CNT-01**).
-2. Clone the repo and open it in VS Code / terminal.
-3. Run: `dotnet run`
-4. Map buttons, analog stick directions, or mouse movement in the right panel and switch to your game/app to use it. U can also use it on Desktop, or any app for that matter, but it's meant to be used with games, not that I'm saying you can't use it with other apps.
+---
 
-## Notes and troubleshooting
+## Setup & Requirements
 
-- **Hot-Pluggable Nunchuk:** The Nunchuk does not need to be connected before launching the application. You can plug it into the Wii Remote at any time while the app is running, and it will be detected and ready to use immediately.
-- **Connection / Pairing Workaround:** Native in-app Bluetooth connection without external setup is still an open goal and not yet solved. For the most reliable connection, pair and connect your Wii Remote using the **Dolphin emulator** before launching this app.
-- **Raw HID approach was abandoned.** Hand-written `0x16`/`0x17` register reads never returned valid extension IDs. WiimoteLib handles the handshake instead.
-- **LEDs flashing:** the sync button (or a lost link) puts the remote into discoverable mode. Don't press sync during normal use.
-- **Remote doesn't reconnect after Bluetooth is toggled:** press a button first. If Settings shows "Driver error," remove the device, restart the Bluetooth service (`Restart-Service bthserv`), and pair again.
-- **Disable Bluetooth power saving** on the adapter in Device Manager (Power Management tab) to reduce drops.
+### Requirements:             
+- Windows 10 or Windows 11 with Bluetooth support
+- [.NET 10 SDK](https://dotnet.microsoft.com/) (`dotnet --version` should print `10.x`)
+- Nintendo Wii Remote (standard or Wii Remote Plus)
+- *(Optional)* Nunchuk extension & Wii MotionPlus accessory
 
-## Roadmap
+### Running the Application:
+1. Clone the repository and navigate into the folder:
+   ```powershell
+   git clone <repo-url>
+   cd WiiRemoteMouse
+   ```
+2. Build and run:
+   ```powershell
+   dotnet run
+   ```
+3. **Connecting your Remote:**
+   - Launch the app.
+   - Spam or press **1 + 2** (or the **Sync** button in the battery compartment) on your Wii Remote.
+   - The app will automatically discover, authenticate, and connect the remote.
+   - Once connected, the Player 1 blue LED on the remote graphic will illuminate.
 
-1. Implement direct in-application Bluetooth connection/pairing (eliminating the Dolphin workaround)
-2. Diagnose MotionPlus detection (`Ext:False`) and read gyro/tilt values
-3. Make the tilt and gyro movements work properly
-4. Profile management (save/load multiple mapping presets for different games)
+---
+
+## Mapping Inputs
+
+1. Open the application.
+2. In the right-hand panel, use the dropdown menus to assign any Wii input (buttons, stick directions, or motion axes) to:
+   - **Keyboard Keys:** Letters A–Z, Numbers 0–9, F1–F12, Space, Enter, Shift, Ctrl, Alt, Arrow keys, etc.
+   - **Mouse Actions:** Mouse Left, Mouse Right, Mouse Middle, Mouse Move (Up/Down/Left/Right), Mouse Scroll (Up/Down).
+3. Adjust the **Sensitivity** slider to your preferred mouse speed.
+4. Switch to your game or desktop app to begin playing!
+
+---
+
+## Motion & Gyro Notes
+
+- **Zero-Point Baselines:**
+  - Accelerometer: Calibrated to neutral resting values ($X: -0.24g, Y: -0.22g, Z: 0.76g$).
+  - Gyroscope (MotionPlus): Calibrated to neutral resting values ($\text{Yaw}: -15^\circ/\text{s}, \text{Roll}: -44^\circ/\text{s}, \text{Pitch}: -105^\circ/\text{s}$).
+- **Deadzones:**
+  - Accelerometer triggers require $> 0.35g$ beyond idle.
+  - Gyroscope triggers require $> 30^\circ/\text{s}$ beyond idle.
+- **Hot-Plugging:**
+  - You can plug or unplug the Nunchuk at any time while the application is running.
+
+---
+
+## License
+
+MIT License. Developed for gaming and accessibility on Windows.
