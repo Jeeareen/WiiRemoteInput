@@ -19,7 +19,7 @@ Built with C# and .NET 10.
   - **Wii Remote:** `A`, `B`, `1`, `2`, `Plus (+)`, `Minus (-)`, `Home`, `D-pad Up/Down/Left/Right`
   - **Nunchuck:** `C`, `Z`, `Stick Up/Down/Left/Right` (automatically grayed out when disconnected)
   - **Motion:**
-    - **Angle:** `Steer Left/Right` (`-75°..+75°` with `±5°` deadzone), `Pitch Up/Down`, `Roll Left/Right`
+    - **Angle:** `Steer Left/Right` (`-75°..+75°`), `Pitch Up/Down`, `Roll Left/Right`
     - **Accel:** `Swing Right/Left`, `Swing Backward/Forward`, `Swing Up/Down` (high-pass filtered linear acceleration with `0.55g` threshold and 220 ms rebound lockout)
     - **Gyro:** `Gyro Left/Right/Up/Down` (automatically grayed out when MotionPlus is inactive)
 - **Steering 0° Calibration & Visual Feedback:**

@@ -82,7 +82,7 @@ public sealed class DolphinWiimoteManager : IDisposable
     /// <param name="accelY">Lateral steering tilt axis when rotating the wheel left/right (in g)</param>
     /// <param name="accelZ">Forward/backward tilt axis when held as a steering wheel (in g)</param>
     /// <param name="prevAngle">Previous smoothed angle state for the Low-Pass Filter (EMA)</param>
-    /// <returns>Steering roll angle in degrees, with [-5, +5] deadzone and [-60, +60] clamping.</returns>
+    /// <returns>Steering roll angle in degrees, clamped to [-75, +75].</returns>
     public static float CalculateSteeringRollAngle(float accelX, float accelY, float accelZ, ref float prevAngle, float zeroOffset = 0f)
     {
         // 1. Use atan2 to calculate the raw steering angle in degrees:
@@ -98,13 +98,8 @@ public sealed class DolphinWiimoteManager : IDisposable
         float smoothedAngle = (prevAngle * 0.8f) + (rawAngle * 0.2f);
         prevAngle = smoothedAngle;
 
-        // 3. Add continuous deadzone between -5 and +5 degrees (no jump at 5°), and clamp final output between -75 and +75 degrees
-        if (MathF.Abs(smoothedAngle) <= 5f)
-            return 0f;
-
-        float sign = MathF.Sign(smoothedAngle);
-        float mag = Math.Clamp(MathF.Abs(smoothedAngle), 5f, 75f);
-        return sign * ((mag - 5f) / 70f) * 75f;
+        // 3. Clamp final output between -75 and +75 degrees
+        return Math.Clamp(smoothedAngle, -75f, 75f);
     }
 
     /// <summary>
