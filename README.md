@@ -4,22 +4,24 @@ A modern Windows application that connects a Nintendo Wii Remote (with Nunchuk a
 
 Built with C# and .NET 10.
 
+![WiiRemoteInput](screenshot.jpg)
+
 ---
 
 ## Features
 
 - **Direct Dolphin-Based Connection & Pairing:**
   - Integrated Dolphin Emulator connection logic directly in-app.
-  - Automatic continuous Bluetooth discovery and authentication (press **1 + 2** or **Sync**).
+  - Automatic continuous Bluetooth discovery and authentication (press continuously **1 + 2** or **Sync** until the remote is connected).
   - Native Windows overlapped HID communication without needing external tools.
 - **Two Output Modes:**
   - **Keyboard & Mouse:** Hardware scan-code keyboard keys (`SendInput`), mouse buttons, continuous mouse movement, and mouse wheel scrolling with an adjustable **Sensitivity** slider (1–10).
-  - **Gamepad (Xbox 360):** Virtual Xbox 360 controller emulation via `Nefarius.ViGEm.Client` (ViGEmBus), with linear analog steering (`-75°` to `+75°` → `LeftThumbX`), analog sticks, triggers (`LT`/`RT`), and all Xbox 360 buttons.
+  - **Gamepad (Xbox 360):** Virtual Xbox 360 controller emulation via `Nefarius.ViGEm.Client` (ViGEmBus), with linear analog steering for racing games(`-75°` to `+75°` → `LeftThumbX`), analog sticks, triggers (`LT`/`RT`), and all Xbox 360 buttons.
 - **Categorized Bindings:**
   - **Wii Remote:** `A`, `B`, `1`, `2`, `Plus (+)`, `Minus (-)`, `Home`, `D-pad Up/Down/Left/Right`
   - **Nunchuck:** `C`, `Z`, `Stick Up/Down/Left/Right` (automatically grayed out when disconnected)
   - **Motion:**
-    - **Angle:** `Steer Left/Right` (`-75°..+75°`), `Pitch Up/Down`, `Roll Left/Right`
+    - **Angle:** `Steer Left/Right`, `Pitch Up/Down`, `Roll Left/Right`
     - **Accel:** `Swing Right/Left`, `Swing Backward/Forward`, `Swing Up/Down` (high-pass filtered linear acceleration with `0.55g` threshold and 220 ms rebound lockout)
     - **Gyro:** `Gyro Left/Right/Up/Down` (automatically grayed out when MotionPlus is inactive)
 - **Steering 0° Calibration & Visual Feedback:**
