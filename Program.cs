@@ -5,19 +5,24 @@ using System.Text.Json;
 using Nefarius.ViGEm.Client;
 using Nefarius.ViGEm.Client.Targets;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
-using WiiRemoteMouse;
+using WiiRemoteInput;
 using PointF = System.Drawing.PointF;
 
 ApplicationConfiguration.Initialize();
 
-string Img(string name) => Path.Combine(AppContext.BaseDirectory, name);
-string[] needed = { "remote.png", "bbutton.png", "nunchuk.png", "nunchuk_c.png", "nunchuk_z.png" };
-var missing = needed.Where(n => !File.Exists(Img(n))).ToArray();
-if (missing.Length > 0)
+string Img(string name)
 {
-    MessageBox.Show("Missing image(s): " + string.Join(", ", missing) +
-                    "\nPut them in the project folder next to the .csproj.");
-    return;
+    var localPath = Path.Combine(AppContext.BaseDirectory, name);
+    if (File.Exists(localPath)) return localPath;
+
+    var cacheDir = Path.Combine(Path.GetTempPath(), "WiiRemoteInput");
+    Directory.CreateDirectory(cacheDir);
+    var tempPath = Path.Combine(cacheDir, name);
+    using var stream = typeof(MainForm).Assembly.GetManifestResourceStream($"WiiRemoteInput.{name}")
+        ?? throw new FileNotFoundException($"Embedded resource not found: {name}");
+    using var fs = File.Create(tempPath);
+    stream.CopyTo(fs);
+    return tempPath;
 }
 
 Application.Run(new MainForm(Img("remote.png"), Img("bbutton.png"),
@@ -97,9 +102,9 @@ class MainForm : Form
         new("Roll Left", PointLeft), new("Roll Right", PointRight),
 
         // Motion -> Accel
-        new("Accel X Up", AccelXUp), new("Accel X Down", AccelXDown),
-        new("Accel Y Up", AccelYUp), new("Accel Y Down", AccelYDown),
-        new("Accel Z Up", AccelZUp), new("Accel Z Down", AccelZDown),
+        new("Swing Right", AccelXUp), new("Swing Left", AccelXDown),
+        new("Swing Backward", AccelYUp), new("Swing Forward", AccelYDown),
+        new("Swing Up", AccelZUp), new("Swing Down", AccelZDown),
 
         // Motion -> Gyro
         new("Gyro Left", GyroYawUp), new("Gyro Right", GyroYawDown),
@@ -189,7 +194,7 @@ class MainForm : Form
 
     static readonly string MapPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "WiiRemoteMouse", "mapping.json");
+        "WiiRemoteInput", "mapping.json");
 
     // Set to true to show green outlines and click two corners of a button
     // on the remote to copy new position numbers to the clipboard.
@@ -202,7 +207,24 @@ class MainForm : Form
     readonly Output?[] assigned = new Output?[Sources.Length];
     readonly Output?[] gamepadAssigned = new Output?[Sources.Length];
     readonly ComboBox[] assignCombos = new ComboBox[Sources.Length];
+    readonly Label[] assignLabels = new Label[Sources.Length];
+    bool? lastNunchukState, lastMplusState;
     bool updatingCombos;
+    Form? calibrationDialog;
+    int accelLockDirX, accelLockDirY, accelLockDirZ;
+    long accelLockUntilX, accelLockUntilY, accelLockUntilZ;
+
+    static float GetAccelSwingIntensity(float val, int wantDir, ref int lockDir, ref long lockUntil)
+    {
+        const float threshold = 0.55f;
+        float mag = wantDir > 0 ? val : -val;
+        if (mag <= threshold) return 0f;
+        long now = Environment.TickCount64;
+        if (now < lockUntil && lockDir == -wantDir) return 0f;
+        lockDir = wantDir;
+        lockUntil = now + 220;
+        return (mag - threshold) * 2.2f;
+    }
     readonly Label outLabel;
     readonly System.Windows.Forms.Timer moveTimer;
     DolphinWiimoteManager? wmManager;
@@ -255,7 +277,7 @@ class MainForm : Form
         nRect = new RectangleF(LeftW / 2 - nW / 2, zRect.Bottom + 20, nW, nH);
 
         Text = "Wii Remote Input";
-        ClientSize = new Size(895, 1020);
+        ClientSize = new Size(895, 940);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         DoubleBuffered = true;
@@ -326,7 +348,7 @@ class MainForm : Form
             Text = "Sensitivity",
             ForeColor = Color.White,
             Left = 12,
-            Top = 70,
+            Top = 65,
             AutoSize = true
         };
         var valLbl = new Label
@@ -335,13 +357,13 @@ class MainForm : Form
             ForeColor = Color.White,
             Font = new Font(Font, FontStyle.Bold),
             Left = 115,
-            Top = 70,
+            Top = 65,
             AutoSize = true
         };
         var speedTrack = new TrackBar
         {
             Left = 160,
-            Top = 66,
+            Top = 61,
             Width = 240,
             Height = 30,
             AutoSize = false,
@@ -361,13 +383,52 @@ class MainForm : Form
         panel.Controls.Add(valLbl);
         panel.Controls.Add(speedTrack);
 
+        var calibrateBtn = new Button
+        {
+            Text = "Calibrate Steer 0°",
+            Left = 12,
+            Top = 100,
+            Width = 140,
+            Height = 40,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(45, 49, 60),
+            ForeColor = Color.White
+        };
+        calibrateBtn.FlatAppearance.BorderColor = Color.FromArgb(72, 78, 96);
+        calibrateBtn.Click += (_, _) =>
+        {
+            using var dlg = new Form
+            {
+                Text = "Calibrate Steering 0°",
+                ClientSize = new Size(380, 140),
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(30, 32, 40),
+                ForeColor = Color.White,
+                Font = Font
+            };
+            dlg.Controls.Add(new Label
+            {
+                Text = "Hold the Wii Remote still like a steering wheel\nwith the buttons facing toward you,\nthen press any button on the Wii Remote.",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.White
+            });
+            calibrationDialog = dlg;
+            dlg.ShowDialog(this);
+            calibrationDialog = null;
+        };
+        panel.Controls.Add(calibrateBtn);
+
         var clearBtn = new Button
         {
             Text = "Clear All Bindings",
             Left = 160,
             Top = 100,
             Width = 240,
-            Height = 32,
+            Height = 40,
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.FromArgb(60, 60, 65),
             ForeColor = Color.White
@@ -388,9 +449,9 @@ class MainForm : Form
         var scrollPanel = new Panel
         {
             Left = 0,
-            Top = 145,
+            Top = 165,
             Width = PanelW,
-            Height = 760,
+            Height = 660,
             AutoScroll = true
         };
         panel.Controls.Add(scrollPanel);
@@ -464,6 +525,7 @@ class MainForm : Form
             cb.SelectedIndex = sel;
             assigned[i] = sel == 0 ? null : Outputs[sel - 1];
             assignCombos[i] = cb;
+            assignLabels[i] = lbl;
 
             string? gpDefault = Sources[i].Name switch
             {
@@ -513,7 +575,7 @@ class MainForm : Form
         {
             ForeColor = Color.Gainsboro,
             Left = 12,
-            Top = 930,
+            Top = 850,
             Width = PanelW - 24,
             Height = 55,
             Text = "Output paused: this window is active.\nSwitch to your game to send keys."
@@ -588,13 +650,13 @@ class MainForm : Form
             else if (bit == PointDown && motion != null && motion.PointPitchAngle > 0f) intensity = motion.PointPitchAngle / 45f;
             else if (bit == PointLeft && motion != null && motion.PointRollAngle < 0f) intensity = -motion.PointRollAngle / 45f;
             else if (bit == PointRight && motion != null && motion.PointRollAngle > 0f) intensity = motion.PointRollAngle / 45f;
-            // Accelerometer: 0.35g threshold, scaling up smoothly with swing acceleration
-            else if (bit == AccelXUp && motion != null && motion.AccelX > 0.35f) intensity = (motion.AccelX - 0.35f) * 1.8f;
-            else if (bit == AccelXDown && motion != null && motion.AccelX < -0.35f) intensity = (-motion.AccelX - 0.35f) * 1.8f;
-            else if (bit == AccelYUp && motion != null && motion.AccelY > 0.35f) intensity = (motion.AccelY - 0.35f) * 1.8f;
-            else if (bit == AccelYDown && motion != null && motion.AccelY < -0.35f) intensity = (-motion.AccelY - 0.35f) * 1.8f;
-            else if (bit == AccelZUp && motion != null && motion.AccelZ > 0.35f) intensity = (motion.AccelZ - 0.35f) * 1.8f;
-            else if (bit == AccelZDown && motion != null && motion.AccelZ < -0.35f) intensity = (-motion.AccelZ - 0.35f) * 1.8f;
+            // Accelerometer: 0.55g threshold + 220ms opposite-direction lockout to ignore deceleration rebound
+            else if (bit == AccelXUp && motion != null) intensity = GetAccelSwingIntensity(motion.AccelX, 1, ref accelLockDirX, ref accelLockUntilX);
+            else if (bit == AccelXDown && motion != null) intensity = GetAccelSwingIntensity(motion.AccelX, -1, ref accelLockDirX, ref accelLockUntilX);
+            else if (bit == AccelYUp && motion != null) intensity = GetAccelSwingIntensity(motion.AccelY, 1, ref accelLockDirY, ref accelLockUntilY);
+            else if (bit == AccelYDown && motion != null) intensity = GetAccelSwingIntensity(motion.AccelY, -1, ref accelLockDirY, ref accelLockUntilY);
+            else if (bit == AccelZUp && motion != null) intensity = GetAccelSwingIntensity(motion.AccelZ, 1, ref accelLockDirZ, ref accelLockUntilZ);
+            else if (bit == AccelZDown && motion != null) intensity = GetAccelSwingIntensity(motion.AccelZ, -1, ref accelLockDirZ, ref accelLockUntilZ);
             // Gyroscope: 30 deg/s threshold, scales continuously with rotational swing velocity (e.g. 300 deg/s swing = higher intensity)
             else if (bit == GyroYawUp && motion is { MotionPlusActive: true } && motion.GyroYaw > 30f) intensity = (motion.GyroYaw - 30f) / 75f;
             else if (bit == GyroYawDown && motion is { MotionPlusActive: true } && motion.GyroYaw < -30f) intensity = (-motion.GyroYaw - 30f) / 75f;
@@ -829,7 +891,38 @@ class MainForm : Form
 
         stickX = jx;
         stickY = jy;
+        if (lastNunchukState != s.ExtensionConnected)
+        {
+            lastNunchukState = s.ExtensionConnected;
+            for (int i = 11; i <= 16; i++)
+            {
+                if (assignCombos[i] is { } cb) cb.Enabled = s.ExtensionConnected;
+                if (assignLabels[i] is { } lb) lb.ForeColor = s.ExtensionConnected ? Color.White : Color.DimGray;
+            }
+        }
+        if (lastMplusState != s.MotionPlusActive)
+        {
+            lastMplusState = s.MotionPlusActive;
+            for (int i = 29; i <= 32; i++)
+            {
+                if (assignCombos[i] is { } cb) cb.Enabled = s.MotionPlusActive;
+                if (assignLabels[i] is { } lb) lb.ForeColor = s.MotionPlusActive ? Color.White : Color.DimGray;
+            }
+        }
+
         long old = mask;
+        if (calibrationDialog is { } dlg)
+        {
+            if (s.A || s.B || s.One || s.Two || s.Plus || s.Minus || s.Home ||
+                s.Up || s.Down || s.Left || s.Right || s.NunchukC || s.NunchukZ)
+            {
+                wmManager?.CalibrateSteeringZero();
+                outLabel.Text = "Steering 0° calibrated.";
+                calibrationDialog = null;
+                dlg.Close();
+            }
+            return;
+        }
         mask = m;
 
         // Send the assigned key / mouse button for every input that just changed.
@@ -879,9 +972,28 @@ class MainForm : Form
         using var glow = new SolidBrush(Color.FromArgb(150, 255, 90, 0));
 
         // ---- Left panel: Nunchuk, with C and Z above it ----
-        g.DrawImage(nImg, nRect);
-        g.DrawImage(cImg, cRect);
-        g.DrawImage(zImg, zRect);
+        if (motion?.ExtensionConnected == true)
+        {
+            g.DrawImage(nImg, nRect);
+            g.DrawImage(cImg, cRect);
+            g.DrawImage(zImg, zRect);
+        }
+        else
+        {
+            using var ia = new System.Drawing.Imaging.ImageAttributes();
+            var cm = new System.Drawing.Imaging.ColorMatrix(new[]
+            {
+                new[] { 0.30f, 0.30f, 0.30f, 0f, 0f },
+                new[] { 0.30f, 0.30f, 0.30f, 0f, 0f },
+                new[] { 0.30f, 0.30f, 0.30f, 0f, 0f },
+                new[] { 0f,    0f,    0f,    0.35f, 0f },
+                new[] { 0f,    0f,    0f,    0f, 1f }
+            });
+            ia.SetColorMatrix(cm);
+            g.DrawImage(nImg, Rectangle.Round(nRect), 0, 0, nImg.Width, nImg.Height, GraphicsUnit.Pixel, ia);
+            g.DrawImage(cImg, Rectangle.Round(cRect), 0, 0, cImg.Width, cImg.Height, GraphicsUnit.Pixel, ia);
+            g.DrawImage(zImg, Rectangle.Round(zRect), 0, 0, zImg.Width, zImg.Height, GraphicsUnit.Pixel, ia);
+        }
         if ((mask & NunchukC) != 0) g.FillEllipse(glow, cRect);
         if ((mask & NunchukZ) != 0)
         {
@@ -1110,8 +1222,8 @@ sealed class GamepadOut : IDisposable
             if (o.Type == OutputType.GamepadAxis)
             {
                 float mag = 0f;
-                if (bit == (1L << 29) && s.SteeringRollAngle < 0f) mag = Math.Clamp(-s.SteeringRollAngle / 60f, 0f, 1f); // SteerLeft
-                else if (bit == (1L << 30) && s.SteeringRollAngle > 0f) mag = Math.Clamp(s.SteeringRollAngle / 60f, 0f, 1f); // SteerRight
+                if (bit == (1L << 29) && s.SteeringRollAngle < 0f) mag = Math.Clamp(-s.SteeringRollAngle / 75f, 0f, 1f); // SteerLeft
+                else if (bit == (1L << 30) && s.SteeringRollAngle > 0f) mag = Math.Clamp(s.SteeringRollAngle / 75f, 0f, 1f); // SteerRight
                 else if (bit == (1L << 11) && s.StickY > 0.12f) mag = Math.Clamp(s.StickY, 0f, 1f); // StickUp
                 else if (bit == (1L << 12) && s.StickY < -0.12f) mag = Math.Clamp(-s.StickY, 0f, 1f); // StickDown
                 else if (bit == (1L << 13) && s.StickX < -0.12f) mag = Math.Clamp(-s.StickX, 0f, 1f); // StickLeft

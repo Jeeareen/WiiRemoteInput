@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace WiiRemoteMouse;
+namespace WiiRemoteInput;
 
 public record WiimoteInputState(
     bool A, bool B, bool One, bool Two, bool Plus, bool Minus, bool Home,
@@ -35,6 +35,7 @@ public sealed class DolphinWiimoteManager : IDisposable
     private volatile bool _continuousScanning = true;
 
     public bool IsConnected => _activeDevice is { IsConnected: true };
+    public void CalibrateSteeringZero() => _activeDevice?.CalibrateSteeringZero();
 
     public void Start()
     {
@@ -82,24 +83,28 @@ public sealed class DolphinWiimoteManager : IDisposable
     /// <param name="accelZ">Forward/backward tilt axis when held as a steering wheel (in g)</param>
     /// <param name="prevAngle">Previous smoothed angle state for the Low-Pass Filter (EMA)</param>
     /// <returns>Steering roll angle in degrees, with [-5, +5] deadzone and [-60, +60] clamping.</returns>
-    public static float CalculateSteeringRollAngle(float accelX, float accelY, float accelZ, ref float prevAngle)
+    public static float CalculateSteeringRollAngle(float accelX, float accelY, float accelZ, ref float prevAngle, float zeroOffset = 0f)
     {
         // 1. Use atan2 to calculate the raw steering angle in degrees:
         // When held upright like a steering wheel, X is the vertical axis (~1g when centered, denominator)
         // and -Y is the lateral steering axis (numerator) so steering left is negative (-) and steering right is positive (+).
-        float rawAngle = MathF.Atan2(-accelY, MathF.Abs(accelX) > 0.1f ? MathF.Abs(accelX) : 0.1f) * (180f / MathF.PI);
+        float rawAngle = MathF.Atan2(-accelY, MathF.Abs(accelX) > 0.1f ? MathF.Abs(accelX) : 0.1f) * (180f / MathF.PI) - zeroOffset;
+        if (rawAngle > 0f)
+            rawAngle *= 90f / MathF.Max(15f, 90f - zeroOffset);
+        else if (rawAngle < 0f)
+            rawAngle *= 90f / MathF.Max(15f, 90f + zeroOffset);
 
         // 2. Apply simple Low-Pass Filter (EMA: smoothed_angle = prev_angle * 0.8 + raw_angle * 0.2) to prevent jitter
         float smoothedAngle = (prevAngle * 0.8f) + (rawAngle * 0.2f);
         prevAngle = smoothedAngle;
 
-        // 3. Add continuous deadzone between -5 and +5 degrees (no jump at 5°), and clamp final output between -60 and +60 degrees
+        // 3. Add continuous deadzone between -5 and +5 degrees (no jump at 5°), and clamp final output between -75 and +75 degrees
         if (MathF.Abs(smoothedAngle) <= 5f)
             return 0f;
 
         float sign = MathF.Sign(smoothedAngle);
-        float mag = Math.Clamp(MathF.Abs(smoothedAngle), 5f, 60f);
-        return sign * ((mag - 5f) / 55f) * 60f;
+        float mag = Math.Clamp(MathF.Abs(smoothedAngle), 5f, 75f);
+        return sign * ((mag - 5f) / 70f) * 75f;
     }
 
     /// <summary>
@@ -315,6 +320,18 @@ internal sealed class DolphinWiimoteDevice : IDisposable
     private float _accelZZero = 0.76f;
     private float _prevSteeringAngle;              // EMA state for steering wheel roll angle (degrees)
     private float _steeringRollAngle;              // Smoothed, deadzoned, and clamped steering wheel roll angle (-90..+90 deg)
+    private float _steeringZeroOffset;             // User-calibrated 0° steering offset
+    private float _rawSteeringAngle;               // Uncalibrated raw steering angle in degrees
+    private float _gravX, _gravY, _gravZ;          // Low-pass gravity estimate for high-pass linear accel
+    private float _linearAccelX, _linearAccelY, _linearAccelZ;
+    private bool _gravInit;
+
+    public void CalibrateSteeringZero()
+    {
+        _steeringZeroOffset = _rawSteeringAngle;
+        _prevSteeringAngle = 0f;
+        _steeringRollAngle = 0f;
+    }
     private float _prevPointPitchAngle;            // EMA state for pointing up/down pitch angle (degrees)
     private float _pointPitchAngle;                // Smoothed, deadzoned, and clamped pointing up/down pitch angle (-90..+90 deg)
     private float _prevPointRollAngle;             // EMA state for pointing left/right roll angle (degrees)
@@ -831,11 +848,27 @@ internal sealed class DolphinWiimoteDevice : IDisposable
             _accelY = ((ay - 512) / 100f) - _accelYZero;
             _accelZ = ((az - 512) / 100f) - _accelZZero;
 
+            if (!_gravInit)
+            {
+                _gravX = _accelX; _gravY = _accelY; _gravZ = _accelZ;
+                _gravInit = true;
+            }
+            else
+            {
+                _gravX = _gravX * 0.9f + _accelX * 0.1f;
+                _gravY = _gravY * 0.9f + _accelY * 0.1f;
+                _gravZ = _gravZ * 0.9f + _accelZ * 0.1f;
+            }
+            _linearAccelX = _accelX - _gravX;
+            _linearAccelY = _accelY - _gravY;
+            _linearAccelZ = _accelZ - _gravZ;
+
             // Note: _accelZ has idle gravity (~1g) subtracted so flat rest reads ~0g.
             // Add 1.0f back for the flat-axis denominator so atan2 sees ~1g when held flat.
             float flatZ = _accelZ + 1.0f;
+            _rawSteeringAngle = MathF.Atan2(-_accelY, MathF.Abs(_accelX) > 0.1f ? MathF.Abs(_accelX) : 0.1f) * (180f / MathF.PI);
             _steeringRollAngle = DolphinWiimoteManager.CalculateSteeringRollAngle(
-                _accelX, _accelY, flatZ, ref _prevSteeringAngle);
+                _accelX, _accelY, flatZ, ref _prevSteeringAngle, _steeringZeroOffset);
             _pointPitchAngle = DolphinWiimoteManager.CalculatePointingPitchAngle(
                 _accelX, _accelY, flatZ, ref _prevPointPitchAngle);
             _pointRollAngle = DolphinWiimoteManager.CalculatePointingRollAngle(
@@ -1046,7 +1079,7 @@ internal sealed class DolphinWiimoteDevice : IDisposable
             StickY: _stickY,
             ExtensionConnected: _extensionId == ExtensionType.Nunchuk,
             MotionPlusActive: _mplusCurrentMode.HasValue && _mplusCurrentMode.Value != 0,
-            AccelX: _accelX, AccelY: _accelY, AccelZ: _accelZ,
+            AccelX: _linearAccelX, AccelY: _linearAccelY, AccelZ: _linearAccelZ,
             GyroYaw: _gyroYaw, GyroRoll: _gyroRoll, GyroPitch: _gyroPitch,
             SteeringRollAngle: _steeringRollAngle,
             PointPitchAngle: _pointPitchAngle,

@@ -1,6 +1,6 @@
-# WiiRemoteMouse
+# WiiRemoteInput
 
-A modern Windows application that connects a Nintendo Wii Remote (with Nunchuk and MotionPlus) and maps its buttons, analog stick, accelerometer, and gyroscope to mouse cursor movement, mouse buttons, scroll wheel actions, and keyboard inputs.
+A modern Windows application that connects a Nintendo Wii Remote (with Nunchuk and MotionPlus) and maps its buttons, analog stick, steering/tilt angles, accelerometer swings, and gyroscope to either **Keyboard & Mouse** or a virtual **Xbox 360 Gamepad**.
 
 Built with C# and .NET 10.
 
@@ -10,79 +10,55 @@ Built with C# and .NET 10.
 
 - **Direct Dolphin-Based Connection & Pairing:**
   - Integrated Dolphin Emulator connection logic directly in-app.
-  - Automatic continuous Bluetooth discovery and authentication (just press **1 + 2** or **Sync**).
+  - Automatic continuous Bluetooth discovery and authentication (press **1 + 2** or **Sync**).
   - Native Windows overlapped HID communication without needing external tools.
-- **Full Control & Button Mapping:**
-  - **Core Remote Buttons:** A, B (trigger), 1, 2, Plus (+), Minus (-), Home, and D-Pad (Up, Down, Left, Right).
-  - **Nunchuk Extension:** C button, Z button, and full 360° analog stick with smooth deflection and deadzone filtering.
-  - **Visual Status & Feedback:** Real-time visual remote and Nunchuk interface with interactive button glow, analog stick indicator, and a glowing blue Player 1 LED when connected.
-- **6DOF Motion Controls (Accelerometer & Gyroscope):**
-  - Real-time display for 3-axis Accelerometer (g) and 3-axis MotionPlus Gyroscope (deg/s).
-  - Idle zero-point baselines configured to eliminate drift at rest.
-  - **Mappable Motion Axes:** Map gestures (tilt, swing, flick) to keyboard keys, mouse clicks, or cursor movements:
-    - `Accel X Up/Down`, `Accel Y Up/Down`, `Accel Z Up/Down`
-    - `Gyro Left`, `Gyro Right`, `Gyro Up`, `Gyro Down`, `Roll Left`, `Roll Right`
-  - **Velocity-Proportional Dynamics:** Harder or faster swings move the mouse cursor or scroll the wheel proportionally faster.
-- **Mouse & Keyboard Emulation:**
-  - High-performance input injection using Windows `SendInput` (hardware scan codes for gaming compatibility).
-  - Smooth cursor movement with adjustable sensitivity slider (1–10).
-  - Mouse wheel scrolling support (`Mouse Scroll Up` / `Mouse Scroll Down`).
-  - Output is safely paused while the config window is focused, automatically resuming when you switch to your game or app.
+- **Two Output Modes:**
+  - **Keyboard & Mouse:** Hardware scan-code keyboard keys (`SendInput`), mouse buttons, continuous mouse movement, and mouse wheel scrolling with an adjustable **Sensitivity** slider (1–10).
+  - **Gamepad (Xbox 360):** Virtual Xbox 360 controller emulation via `Nefarius.ViGEm.Client` (ViGEmBus), with linear analog steering (`-75°` to `+75°` → `LeftThumbX`), analog sticks, triggers (`LT`/`RT`), and all Xbox 360 buttons.
+- **Categorized Bindings:**
+  - **Wii Remote:** `A`, `B`, `1`, `2`, `Plus (+)`, `Minus (-)`, `Home`, `D-pad Up/Down/Left/Right`
+  - **Nunchuck:** `C`, `Z`, `Stick Up/Down/Left/Right` (automatically grayed out when disconnected)
+  - **Motion:**
+    - **Angle:** `Steer Left/Right` (`-75°..+75°` with `±5°` deadzone), `Pitch Up/Down`, `Roll Left/Right`
+    - **Accel:** `Swing Right/Left`, `Swing Backward/Forward`, `Swing Up/Down` (high-pass filtered linear acceleration with `0.55g` threshold and 220 ms rebound lockout)
+    - **Gyro:** `Gyro Left/Right/Up/Down` (automatically grayed out when MotionPlus is inactive)
+- **Steering 0° Calibration & Visual Feedback:**
+  - **Calibrate Steer 0°** button to set your neutral steering-wheel angle on any Wii Remote.
+  - **Clear All Bindings** button to reset the active mode's bindings.
+  - Real-time visual Wii Remote & Nunchuk overlay with button highlights, Player 1 blue LED, and a 3-column **Angles / Accel / Gyro** readout card.
 - **Persistent Configuration:**
-  - Automatically saves all key/mouse assignments and sensitivity preferences across sessions in `%AppData%/WiiRemoteMouse/mapping.json`.
+  - Saves Keyboard & Mouse bindings, Gamepad bindings, and sensitivity in `%AppData%/WiiRemoteInput/mapping.json`.
 
 ---
 
 ## Setup & Requirements
 
-### Requirements:             
+### Requirements
 - Windows 10 or Windows 11 with Bluetooth support
-- [.NET 10 SDK](https://dotnet.microsoft.com/) (`dotnet --version` should print `10.x`)
-- Nintendo Wii Remote (standard or Wii Remote Plus)
-- *(Optional)* Nunchuk extension & Wii MotionPlus accessory
+- [.NET 10 SDK](https://dotnet.microsoft.com/) (or .NET 10 Desktop Runtime for running the built `.exe`)
+- *(For Gamepad mode)* [ViGEmBus Driver](https://github.com/nefarius/ViGEmBus/releases)
+- Nintendo Wii Remote (standard or Wii Remote Plus), plus optional Nunchuk / MotionPlus
 
-### Running the Application:
-1. Clone the repository and navigate into the folder:
-   ```powershell
-   git clone <repo-url>
-   cd WiiRemoteMouse
-   ```
-2. Build and run:
-   ```powershell
-   dotnet run
-   ```
-3. **Connecting your Remote:**
-   - Launch the app.
-   - Spam or press **1 + 2** (or the **Sync** button in the battery compartment) on your Wii Remote.
-   - The app will automatically discover, authenticate, and connect the remote.
-   - Once connected, the Player 1 blue LED on the remote graphic will illuminate.
+### Installing ViGEmBus Driver (Required for Gamepad Mode)
+If you want to use the virtual **Xbox 360 Gamepad** mode, you must install the ViGEmBus kernel driver:
+1. Go to the [ViGEmBus Releases page](https://github.com/nefarius/ViGEmBus/releases).
+2. Download the latest `ViGEmBus_Setup_x64.msi` (or `ViGEmBusSetup_x64.exe`) installer.
+3. Run the installer and follow the on-screen prompts (accept the license agreement and click **Install**).
+4. Restart your PC if prompted, then launch `WiiRemoteInput.exe`.
 
----
+### Building & Running
+```powershell
+dotnet build -c Release
+```
+The release executable is output to `bin\Release\net10.0-windows\WiiRemoteInput.exe`.
 
-## Mapping Inputs
-
-1. Open the application.
-2. In the right-hand panel, use the dropdown menus to assign any Wii input (buttons, stick directions, or motion axes) to:
-   - **Keyboard Keys:** Letters A–Z, Numbers 0–9, F1–F12, Space, Enter, Shift, Ctrl, Alt, Arrow keys, etc.
-   - **Mouse Actions:** Mouse Left, Mouse Right, Mouse Middle, Mouse Move (Up/Down/Left/Right), Mouse Scroll (Up/Down).
-3. Adjust the **Sensitivity** slider to your preferred mouse speed.
-4. Switch to your game or desktop app to begin playing!
-
----
-
-## Motion & Gyro Notes
-
-- **Zero-Point Baselines:**
-  - Accelerometer: Calibrated to neutral resting values ($X: -0.24g, Y: -0.22g, Z: 0.76g$).
-  - Gyroscope (MotionPlus): Calibrated to neutral resting values ($\text{Yaw}: -15^\circ/\text{s}, \text{Roll}: -44^\circ/\text{s}, \text{Pitch}: -105^\circ/\text{s}$).
-- **Deadzones:**
-  - Accelerometer triggers require $> 0.35g$ beyond idle.
-  - Gyroscope triggers require $> 30^\circ/\text{s}$ beyond idle.
-- **Hot-Plugging:**
-  - You can plug or unplug the Nunchuk at any time while the application is running.
+To publish a standalone single-file `.exe` (no .NET runtime required):
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+```
 
 ---
 
 ## License
 
-MIT License. Developed for gaming and accessibility on Windows.
+MIT License.
